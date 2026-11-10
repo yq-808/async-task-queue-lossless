@@ -3,6 +3,7 @@ package io.github.yq808.taskqueue.handler;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.Set;
 import java.util.function.Function;
 import java.util.stream.Collectors;
 import org.springframework.stereotype.Component;
@@ -20,7 +21,7 @@ public class TaskHandlerRegistry {
         return Optional.ofNullable(handlers.get(type));
     }
 
-    public java.util.Set<String> types() {
+    public Set<String> types() {
         return handlers.keySet();
     }
 }

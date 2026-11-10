@@ -12,7 +12,9 @@ import java.util.EnumSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import org.springframework.data.domain.Page;
 import org.springframework.data.domain.PageRequest;
+import org.springframework.data.domain.Sort;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -187,8 +189,8 @@ public class TaskStore {
     }
 
     @Transactional(readOnly = true)
-    public org.springframework.data.domain.Page<TaskEntity> list(TaskStatus status, int page, int size) {
-        PageRequest req = PageRequest.of(page, size, org.springframework.data.domain.Sort.by("createdAt").descending());
+    public Page<TaskEntity> list(TaskStatus status, int page, int size) {
+        PageRequest req = PageRequest.of(page, size, Sort.by("createdAt").descending());
         return status == null ? tasks.findAll(req) : tasks.findByStatus(status, req);
     }
 
