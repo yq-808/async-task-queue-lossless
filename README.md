@@ -128,7 +128,8 @@ scripts/shutdown-test.sh       # SIGTERM 停机：503、限时收敛、回写、
 scripts/docker-smoke.sh        # 构建镜像、运行任务、docker stop、在同一个卷上重启后数据仍在
 ```
 
-脚本需要 `curl` 和 `jq`，默认使用 `18080` 端口（`PORT=… scripts/xxx.sh` 可改），运行数据在 `run/` 下。
+前四个脚本需要 JDK 17+、`curl` 和 `jq`，默认使用 `18080` 端口（`PORT=… scripts/xxx.sh` 可改），启动前检查端口空闲，运行数据在 `run/` 下。
+`docker-smoke.sh` 只需要 `docker`、`curl` 和 `jq`，数据放在一个临时 Docker 卷里，结束时删除。
 结果见 [docs/VALIDATION.md](docs/VALIDATION.md)。
 
 ## 主要配置
