@@ -1,0 +1,35 @@
+# Fast settings for integration tests: short simulated latency, no random failures,
+# quick backoff and quick shutdown. Each test class gets its own H2 file directory.
+spring:
+  h2:
+    console:
+      enabled: false
+taskqueue:
+  worker:
+    threads: 4
+  admission:
+    max-backlog: 100000
+    adaptive: false
+  retry:
+    initial-backoff: 100ms
+    max-backoff: 400ms
+    jitter: 0
+  execution:
+    timeout: 2s
+    lease: 10s
+    lease-check-interval: 200ms
+  dispatcher:
+    poll-interval: 50ms
+  shutdown:
+    await-running: 2s
+    await-interrupted: 2s
+  simulation:
+    min-latency: 10ms
+    max-latency: 30ms
+    retryable-failure-rate: 0
+    system-failure-rate: 0
+    cpu-work-rounds: 1
+logging:
+  level:
+    root: WARN
+    io.github.yq808.taskqueue: WARN
