@@ -1,0 +1,93 @@
+server:
+  port: ${PORT:8080}
+  # Stop taking new HTTP connections on SIGTERM and let in-flight requests finish.
+  shutdown: graceful
+
+spring:
+  application:
+    name: async-task-queue-lossless
+  lifecycle:
+    # The task engine needs awaitRunning + awaitInterrupted (+ a margin) to stop.
+    timeout-per-shutdown-phase: 40s
+  datasource:
+    # File mode, so tasks survive restarts.
+    #  WRITE_DELAY=0       : write each commit to the file at once instead of up to 500 ms later,
+    #                        so a committed (= accepted) task survives kill -9 of the JVM.
+    #  DB_CLOSE_ON_EXIT=FALSE: let Spring close the database after the task engine has written
+    #                        back, instead of H2's own shutdown hook closing it first.
+    url: jdbc:h2:file:${taskqueue.data-dir:./data}/taskqueue;WRITE_DELAY=0;DB_CLOSE_ON_EXIT=FALSE;LOCK_TIMEOUT=10000
+    username: sa
+    password: ""
+    hikari:
+      maximum-pool-size: 32
+      connection-timeout: 5000
+  sql:
+    init:
+      mode: always            # runs schema.sql (CREATE ... IF NOT EXISTS) on every start
+  jpa:
+    hibernate:
+      ddl-auto: none          # schema.sql is the source of truth
+    open-in-view: false
+    properties:
+      hibernate:
+        jdbc:
+          time_zone: UTC
+  h2:
+    console:
+      enabled: true           # http://localhost:8080/h2-console (JDBC URL as above)
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info,metrics,prometheus
+  endpoint:
+    health:
+      show-details: always
+
+taskqueue:
+  worker:
+    threads: 16
+  queue:
+    capacity: 0               # 0 = threads * capacity-factor = 128
+    capacity-factor: 8
+    low-watermark-ratio: 0.5
+    aging-threshold: 30s
+  admission:
+    max-backlog: 10000
+    adaptive: true
+    min-backlog: 1000
+    target-max-queue-wait: 10m
+    normal-share: 0.9
+    low-share: 0.7
+  retry:
+    max-attempts: 4
+    initial-backoff: 1s
+    multiplier: 2.0
+    max-backoff: 60s
+    jitter: 0.2
+    max-system-retries: 10
+  execution:
+    timeout: 10s
+    lease: 60s
+    lease-check-interval: 10s
+    breaker-failure-threshold: 5
+    breaker-open-duration: 5s
+  dispatcher:
+    poll-interval: 200ms
+  shutdown:
+    await-running: 20s
+    await-interrupted: 5s
+  retention:
+    succeeded-ttl: 7d
+    cleanup-interval: 1h
+  simulation:
+    min-latency: 200ms
+    max-latency: 1500ms
+    retryable-failure-rate: 0.08
+    system-failure-rate: 0.02
+    cpu-work-rounds: 200
+
+logging:
+  level:
+    io.github.yq808.taskqueue: INFO
