@@ -30,11 +30,12 @@ start_app "$RUN" --taskqueue.simulation.min-latency=10ms --taskqueue.simulation.
 wait_drained 120
 succeeded=$(stats | jq .succeeded)
 recovered=$(metrics | jq .counters.recoveredAfterCrash)
-maxattempts=$(curl -s "$BASE/api/tasks?size=200&page=0" | jq '[.items[].attempts] | max')
+maxattempts=$( (curl -s "$BASE/api/tasks?size=200&page=0"; curl -s "$BASE/api/tasks?size=200&page=1") \
+  | jq -s '[.[].items[].attempts] | max')
 stats | jq -c .
 stop_app TERM >/dev/null
-log "succeeded=$succeeded of $accepted, recovered-as-crash=$recovered, highest attempt count on page 1=$maxattempts"
-if [[ "$succeeded" == "$accepted" && "$recovered" == 0 && "$ms" -lt 15000 ]]; then
+log "succeeded=$succeeded of $accepted, recovered-as-crash=$recovered, highest attempt count of any task=$maxattempts"
+if [[ "$succeeded" == "$accepted" && "$recovered" == 0 && "$maxattempts" == 1 && "$ms" -lt 15000 ]]; then
   log "PASS: graceful stop wrote everything back, nothing needed crash recovery, all tasks finished"
 else
   log "FAIL"; exit 1
