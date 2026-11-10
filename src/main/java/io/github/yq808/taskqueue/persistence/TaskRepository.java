@@ -38,6 +38,13 @@ public interface TaskRepository extends JpaRepository<TaskEntity, String> {
     List<DispatchCandidate> findDispatchable(@Param("waiting") Collection<TaskStatus> waiting,
                                              @Param("now") Instant now, Pageable limit);
 
+    /** Due tasks below the top priority that became runnable before {@code readyBefore}, oldest first. */
+    @Query("select new io.github.yq808.taskqueue.persistence.DispatchCandidate(t.id, t.priority, t.nextRunAt) "
+            + "from TaskEntity t where t.status in :waiting and t.priority > 0 and t.nextRunAt <= :readyBefore "
+            + "order by t.nextRunAt asc")
+    List<DispatchCandidate> findStarved(@Param("waiting") Collection<TaskStatus> waiting,
+                                        @Param("readyBefore") Instant readyBefore, Pageable limit);
+
     /** PENDING/RETRY_WAIT -> RUNNING, only if nobody touched the row since it was read. */
     @Modifying(clearAutomatically = true, flushAutomatically = true)
     @Query("update TaskEntity t set t.status = :running, t.attempts = t.attempts + 1, t.version = t.version + 1, "

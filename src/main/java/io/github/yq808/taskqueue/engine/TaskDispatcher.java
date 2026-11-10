@@ -10,10 +10,12 @@ import io.micrometer.core.instrument.Gauge;
 import io.micrometer.core.instrument.MeterRegistry;
 import java.time.Clock;
 import java.time.Duration;
+import java.time.Instant;
 import java.util.List;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicInteger;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Component;
@@ -27,10 +29,17 @@ import org.springframework.stereotype.Component;
  *       into memory. If memory is full, a more urgent task evicts the newest, least urgent one;
  *       otherwise the new task just stays on disk. Nothing is lost either way because the row is
  *       already PENDING in the database.</li>
- *   <li><b>Refill</b> — a single dispatcher thread tops the queue up from the database whenever
- *       it drops to the low watermark, picking due tasks (including retries whose backoff has
- *       passed) by priority then age.</li>
+ *   <li><b>Refill</b> — a single dispatcher thread tops the queue up from the database, picking
+ *       due tasks (including retries whose backoff has passed) by priority then age. It runs
+ *       when the queue drops to the low watermark, and also at once when a task more urgent than
+ *       something in memory has spilled to disk; then it uses the same eviction rule, so a
+ *       spilled HIGH task displaces a LOW one instead of waiting for the queue to drain.</li>
  * </ol>
+ *
+ * <p>Aging inside the memory queue only helps tasks that are in memory. So that a lower
+ * priority task left on disk cannot starve while urgent work keeps coming, each refill first
+ * loads a few tasks that have been runnable for longer than the aging threshold, and queues them
+ * at the top level.
  *
  * <p>An id stays marked as in memory from the moment it is queued until a worker's claim on it
  * has finished, so a refill does not queue it again. If a stale copy still slips in (for example
@@ -44,6 +53,7 @@ import org.springframework.stereotype.Component;
 public class TaskDispatcher {
 
     private static final Logger log = LoggerFactory.getLogger(TaskDispatcher.class);
+    private static final int NONE = Integer.MAX_VALUE;
 
     private final BoundedPriorityBlockingQueue<QueuedTask> queue;
     private final Set<String> inMemory = ConcurrentHashMap.newKeySet();
@@ -52,6 +62,10 @@ public class TaskDispatcher {
     private final TaskMetrics metrics;
     private final int lowWatermark;
     private final long pollIntervalMillis;
+    private final Duration agingThreshold;
+    private final int starvedPerRefill;
+    /** Most urgent level that has spilled to disk since the last refill; NONE when nothing has. */
+    private final AtomicInteger mostUrgentSpilled = new AtomicInteger(NONE);
     private final Object wakeLock = new Object();
     private boolean wakeRequested;
 
@@ -65,6 +79,8 @@ public class TaskDispatcher {
                 properties.queue().agingThreshold().toNanos());
         this.lowWatermark = (int) Math.floor(capacity * properties.queue().lowWatermarkRatio());
         this.pollIntervalMillis = Math.max(10, properties.dispatcher().pollInterval().toMillis());
+        this.agingThreshold = properties.queue().agingThreshold();
+        this.starvedPerRefill = Math.max(1, capacity / 8);
         this.store = store;
         this.clock = clock;
         this.metrics = metrics;
@@ -77,11 +93,17 @@ public class TaskDispatcher {
     }
 
     public void startFeeding() {
-        feeding = true;
+        open();
         Thread t = new Thread(this::feedLoop, "task-dispatcher");
         t.setDaemon(true);
         feeder = t;
         t.start();
+    }
+
+    /** Lets the fast path and the refill put tasks into memory (again, after a stop). */
+    void open() {
+        queue.reopen();
+        feeding = true;
     }
 
     /** Stops the refill thread (flag + wake, no interrupt) and waits for it. */
@@ -102,13 +124,21 @@ public class TaskDispatcher {
         var result = queue.offerOrEvict(new QueuedTask(id, priorityLevel));
         if (!result.accepted()) {
             inMemory.remove(id);
-            metrics.spilledToDisk.increment();
+            spilled(priorityLevel);
             return;
         }
         result.evictedElement().ifPresent(evicted -> {
             inMemory.remove(evicted.id());
-            metrics.spilledToDisk.increment();
+            spilled(evicted.priorityLevel());
         });
+    }
+
+    private void spilled(int level) {
+        metrics.spilledToDisk.increment();
+        mostUrgentSpilled.accumulateAndGet(level, Math::min);
+        if (level < queue.leastUrgentLevelPresent()) {
+            wake();
+        }
     }
 
     public QueuedTask poll(long timeout, TimeUnit unit) throws InterruptedException {
@@ -133,39 +163,69 @@ public class TaskDispatcher {
      * still PENDING or RETRY_WAIT in the database and will be loaded again after a restart.
      */
     public List<String> closeAndDrain() {
+        feeding = false;
         queue.close();
         List<String> ids = queue.drain().stream().map(QueuedTask::id).toList();
         inMemory.clear();
         return ids;
     }
 
-    /** Loads due tasks from the database when the queue is at or below the low watermark. */
+    /**
+     * Loads due tasks from the database when the queue is at or below the low watermark, or when
+     * a task more urgent than the least urgent one in memory has spilled to disk.
+     */
     int refill() {
         int size = queue.size();
-        if (size > lowWatermark) {
+        boolean low = size <= lowWatermark;
+        boolean urgentOnDisk = mostUrgentSpilled.get() < queue.leastUrgentLevelPresent();
+        if (!low && !urgentOnDisk) {
             return 0;
         }
-        int free = queue.capacity() - size;
-        if (free <= 0) {
-            return 0;
-        }
-        // Ask for extra rows: the most urgent rows are often the ones already in memory.
-        List<DispatchCandidate> candidates = store.findDispatchable(clock.instant(), free + size);
+        mostUrgentSpilled.set(NONE);
+        Instant now = clock.instant();
         int loaded = 0;
-        for (DispatchCandidate c : candidates) {
-            if (loaded >= free) {
+
+        // Tasks that have waited past the aging threshold go first, promoted to the top level.
+        for (DispatchCandidate c : store.findStarved(now.minus(agingThreshold), starvedPerRefill)) {
+            Load result = load(c.id(), 0);
+            if (result == Load.REJECTED) {
                 break;
             }
-            if (!inMemory.add(c.id())) {
-                continue;
-            }
-            if (!queue.offer(new QueuedTask(c.id(), c.priority()))) {
-                inMemory.remove(c.id());
+            loaded += result == Load.LOADED ? 1 : 0;
+        }
+
+        // Then by priority and age. Ask for extra rows: the most urgent ones are often already in memory.
+        int capacity = queue.capacity();
+        for (DispatchCandidate c : store.findDispatchable(now, capacity + queue.size())) {
+            Load result = load(c.id(), c.priority());
+            if (result == Load.REJECTED) {
                 break;
             }
-            loaded++;
+            loaded += result == Load.LOADED ? 1 : 0;
         }
         return loaded;
+    }
+
+    private enum Load { LOADED, ALREADY_IN_MEMORY, REJECTED }
+
+    /**
+     * Puts one task from the database into memory, evicting a less urgent one if memory is full.
+     * REJECTED means it could not get in, so no later candidate (equally or less urgent) would either.
+     */
+    private Load load(String id, int level) {
+        if (!inMemory.add(id)) {
+            return Load.ALREADY_IN_MEMORY;
+        }
+        var result = queue.offerOrEvict(new QueuedTask(id, level));
+        if (!result.accepted()) {
+            inMemory.remove(id);
+            return Load.REJECTED;
+        }
+        result.evictedElement().ifPresent(evicted -> {
+            inMemory.remove(evicted.id());
+            metrics.spilledToDisk.increment();
+        });
+        return Load.LOADED;
     }
 
     private void feedLoop() {

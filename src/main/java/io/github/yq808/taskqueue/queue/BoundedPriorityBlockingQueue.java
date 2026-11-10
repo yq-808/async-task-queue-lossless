@@ -261,6 +261,34 @@ public final class BoundedPriorityBlockingQueue<E extends Prioritized> {
         }
     }
 
+    /**
+     * The least urgent level that currently holds an element, or -1 when empty. Lets a caller
+     * tell whether something more urgent waiting elsewhere could displace an element here.
+     */
+    public int leastUrgentLevelPresent() {
+        lock.lock();
+        try {
+            for (int i = levels.length - 1; i >= 0; i--) {
+                if (!levels[i].isEmpty()) {
+                    return i;
+                }
+            }
+            return -1;
+        } finally {
+            lock.unlock();
+        }
+    }
+
+    /** Accepts elements again after {@link #close()}, for a component that is started a second time. */
+    public void reopen() {
+        lock.lock();
+        try {
+            closed = false;
+        } finally {
+            lock.unlock();
+        }
+    }
+
     public boolean isClosed() {
         lock.lock();
         try {

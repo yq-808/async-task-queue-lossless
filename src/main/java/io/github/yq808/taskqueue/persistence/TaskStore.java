@@ -161,6 +161,12 @@ public class TaskStore {
         return tasks.findDispatchable(TaskStatus.WAITING, now, PageRequest.of(0, Math.max(1, limit)));
     }
 
+    /** Due tasks below HIGH priority that have been runnable since before {@code readyBefore}, oldest first. */
+    @Transactional(readOnly = true)
+    public List<DispatchCandidate> findStarved(Instant readyBefore, int limit) {
+        return tasks.findStarved(TaskStatus.WAITING, readyBefore, PageRequest.of(0, Math.max(1, limit)));
+    }
+
     @Transactional(readOnly = true)
     public long countBacklog() {
         return tasks.countByStatusIn(TaskStatus.WAITING);
