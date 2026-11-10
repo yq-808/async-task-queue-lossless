@@ -6,6 +6,9 @@ import io.github.yq808.taskqueue.handler.NonRetryableTaskException;
 import io.github.yq808.taskqueue.handler.RecoverableSystemException;
 import io.github.yq808.taskqueue.handler.RetryableTaskException;
 import java.io.IOException;
+import java.util.Collections;
+import java.util.IdentityHashMap;
+import java.util.Set;
 import java.util.concurrent.CompletionException;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.TimeoutException;
@@ -56,7 +59,8 @@ public final class FailureClassifier {
 
     /** True when an IO error (other than a parse error) is anywhere in the cause chain. */
     private static boolean causedByIo(Throwable t) {
-        for (Throwable c = t; c != null; c = c.getCause() == c ? null : c.getCause()) {
+        Set<Throwable> seen = Collections.newSetFromMap(new IdentityHashMap<>());
+        for (Throwable c = t; c != null && seen.add(c); c = c.getCause()) {
             if (c instanceof IOException && !(c instanceof JsonProcessingException)) {
                 return true;
             }
@@ -64,10 +68,13 @@ public final class FailureClassifier {
         return false;
     }
 
+    /** Looks through execution wrappers; stops at a cause already seen, since a cause chain can loop. */
     private static Throwable unwrap(Throwable t) {
+        Set<Throwable> seen = Collections.newSetFromMap(new IdentityHashMap<>());
+        seen.add(t);
         Throwable current = t;
         while ((current instanceof ExecutionException || current instanceof CompletionException)
-                && current.getCause() != null) {
+                && current.getCause() != null && seen.add(current.getCause())) {
             current = current.getCause();
         }
         return current;

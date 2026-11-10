@@ -1,6 +1,7 @@
 package io.github.yq808.taskqueue.engine;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.junit.jupiter.api.Assertions.assertTimeoutPreemptively;
 
 import com.fasterxml.jackson.core.JsonParseException;
 import io.github.yq808.taskqueue.domain.ErrorType;
@@ -10,6 +11,8 @@ import io.github.yq808.taskqueue.handler.RetryableTaskException;
 import java.io.IOException;
 import java.io.UncheckedIOException;
 import java.net.ConnectException;
+import java.time.Duration;
+import java.util.concurrent.CompletionException;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.TimeoutException;
 import org.junit.jupiter.api.Test;
@@ -46,5 +49,16 @@ class FailureClassifierTest {
         var wrapped = new ExecutionException(new RetryableTaskException("429"));
         assertThat(FailureClassifier.classify(wrapped)).isEqualTo(ErrorType.BUSINESS_RETRYABLE);
         assertThat(FailureClassifier.describe(wrapped)).isEqualTo("RetryableTaskException: 429");
+
+        // A cause chain that loops back on itself must not hang the worker classifying it.
+        var outer = new IllegalStateException("outer");
+        outer.initCause(new IllegalStateException("inner", outer));
+        var execution = new ExecutionException("wrapper") { };
+        execution.initCause(new CompletionException(execution));
+        assertTimeoutPreemptively(Duration.ofSeconds(5), () -> {
+            assertThat(FailureClassifier.classify(outer)).isEqualTo(ErrorType.SYSTEM_FATAL);
+            assertThat(FailureClassifier.classify(execution)).isEqualTo(ErrorType.SYSTEM_FATAL);
+            assertThat(FailureClassifier.describe(execution)).startsWith("CompletionException");
+        });
     }
 }

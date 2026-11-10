@@ -93,7 +93,10 @@ public class TaskController {
                 .orElse(ResponseEntity.notFound().build());
     }
 
-    /** 200 with the result once SUCCEEDED; 409 with the current status otherwise; 404 for an unknown id. */
+    /**
+     * 200 with the result once SUCCEEDED; 409 with the current status otherwise; 404 for an unknown
+     * id, including a task that retention deleted, even between the two reads here.
+     */
     @GetMapping("/{id}/result")
     public ResponseEntity<Map<String, Object>> result(@PathVariable String id) throws JsonProcessingException {
         TaskEntity task = store.find(id).orElse(null);
