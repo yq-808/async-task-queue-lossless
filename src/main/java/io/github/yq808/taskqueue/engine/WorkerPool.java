@@ -41,14 +41,14 @@ public class WorkerPool {
     private final String instanceId = UUID.randomUUID().toString().substring(0, 8);
     private final AtomicInteger busy = new AtomicInteger();
     private final List<WorkerSlot> slots = new CopyOnWriteArrayList<>();
-
-    private volatile boolean running;
     /**
      * Bumped on every start. A worker loop only keeps going while its own run is current, so a
      * worker that outlived a stop (stuck past both waits) exits once it gets free, instead of
      * running alongside the new pool after a restart.
      */
     private final AtomicInteger run = new AtomicInteger();
+
+    private volatile boolean running;
     private volatile ThreadPoolExecutor executor;
 
     public WorkerPool(TaskQueueProperties properties, TaskDispatcher dispatcher, TaskProcessor processor,

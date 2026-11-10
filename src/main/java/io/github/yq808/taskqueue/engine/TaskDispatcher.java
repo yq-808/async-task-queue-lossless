@@ -76,13 +76,13 @@ public class TaskDispatcher {
     private final AtomicLong releaseSeq = new AtomicLong();
     /** Most urgent level that has spilled to disk since the last refill; NONE when nothing has. */
     private final AtomicInteger mostUrgentSpilled = new AtomicInteger(NONE);
+    /** Bumped on every start, so a refill thread left over from an earlier run exits instead of running alongside. */
+    private final AtomicInteger feederRun = new AtomicInteger();
     private final Object wakeLock = new Object();
     private boolean wakeRequested;
 
     private volatile boolean feeding;
     private volatile Thread feeder;
-    /** Bumped on every start, so a refill thread left over from an earlier run exits instead of running alongside. */
-    private final AtomicInteger feederRun = new AtomicInteger();
 
     public TaskDispatcher(TaskQueueProperties properties, TaskStore store, Clock clock, TaskMetrics metrics,
                           MeterRegistry registry) {
