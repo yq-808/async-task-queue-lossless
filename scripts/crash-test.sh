@@ -13,7 +13,8 @@ rm -rf "$RUN"
 ARGS=(--taskqueue.simulation.min-latency=200ms --taskqueue.simulation.max-latency=600ms)
 # Extra app settings, e.g. EXTRA_ARGS="--taskqueue.admission.max-backlog=1000" to force backpressure.
 read -r -a EXTRA <<< "${EXTRA_ARGS:-}"
-ARGS+=("${EXTRA[@]}")
+# ${EXTRA[@]+...}: an empty array is "unbound" under set -u in bash 3.2, the macOS default.
+ARGS+=(${EXTRA[@]+"${EXTRA[@]}"})
 start_app "$RUN" "${ARGS[@]}"
 
 log "submitting $N tasks from 32 clients in the background"
