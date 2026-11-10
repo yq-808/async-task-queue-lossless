@@ -9,7 +9,7 @@ rm -rf "$RUN"
 start_app "$RUN" --taskqueue.worker.threads=8 \
   --taskqueue.simulation.min-latency=2s --taskqueue.simulation.max-latency=6s \
   --taskqueue.simulation.retryable-failure-rate=0 --taskqueue.simulation.system-failure-rate=0 \
-  --taskqueue.execution.timeout=10s --taskqueue.shutdown.await-running=3s --taskqueue.shutdown.await-interrupted=5s
+  --taskqueue.execution.timeout=10s --taskqueue.shutdown.await-running=1s --taskqueue.shutdown.await-interrupted=5s
 
 submit_many "$N" stop 32 > "$RUN/responses.txt"
 accepted=$(awk '$1=="202"' "$RUN/responses.txt" | wc -l | tr -d ' ')
@@ -17,7 +17,7 @@ sleep 2
 log "accepted $accepted; state before SIGTERM:"; stats | jq -c '{backlog, inMemoryQueue, running, succeeded}'
 
 ( sleep 0.5; submit stop-late NORMAL '{"text":"sent during shutdown"}' > "$RUN/late.txt" ) &
-log "SIGTERM (await-running 3s, then interrupt and write back, await-interrupted 5s)"
+log "SIGTERM (await-running 1s, then interrupt and write back, await-interrupted 5s)"
 ms=$(stop_app TERM)
 wait || true
 log "JVM exited after $ms ms"

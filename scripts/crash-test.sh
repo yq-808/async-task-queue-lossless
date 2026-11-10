@@ -7,7 +7,7 @@
 #      for anything already accepted, so nothing is lost and nothing runs as two tasks
 source "$(dirname "$0")/common.sh"
 RUN="${RUN_DIR:-$ROOT/run/crash}"
-N="${N:-2000}"
+N="${N:-8000}"
 rm -rf "$RUN"
 ARGS=(--taskqueue.simulation.min-latency=200ms --taskqueue.simulation.max-latency=600ms)
 start_app "$RUN" "${ARGS[@]}"
@@ -15,7 +15,7 @@ start_app "$RUN" "${ARGS[@]}"
 log "submitting $N tasks from 32 clients in the background"
 submit_many "$N" crash 32 > "$RUN/responses-before.txt" &
 SUBMITTER=$!
-sleep "${KILL_AFTER:-4}"
+sleep "${KILL_AFTER:-2}"
 log "state just before the crash"; stats | jq -c '{backlog, running, succeeded}'
 log "kill -9 $APP_PID"
 stop_app KILL >/dev/null
