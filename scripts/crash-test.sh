@@ -3,13 +3,18 @@
 # Then restart on the same H2 files and check:
 #   1. every submission that got 202 before the crash still exists (the accept boundary holds)
 #   2. tasks left RUNNING by the dead process are recovered and finish
-#   3. clients retrying every request with the same business key get the same task id back
-#      for anything already accepted, so nothing is lost and nothing runs as two tasks
+#   3. clients retrying every request with the same business key (and again after a 429, as
+#      Retry-After asks) get the same task id back for anything already accepted, so nothing is
+#      lost and nothing runs as two tasks
 source "$(dirname "$0")/common.sh"
 RUN="${RUN_DIR:-$ROOT/run/crash}"
 N="${N:-8000}"
 rm -rf "$RUN"
 ARGS=(--taskqueue.simulation.min-latency=200ms --taskqueue.simulation.max-latency=600ms)
+# Extra app settings, e.g. EXTRA_ARGS="--taskqueue.admission.max-backlog=1000" to force backpressure.
+read -r -a EXTRA <<< "${EXTRA_ARGS:-}"
+# ${EXTRA[@]+...}: an empty array is "unbound" under set -u in bash 3.2, the macOS default.
+ARGS+=(${EXTRA[@]+"${EXTRA[@]}"})
 start_app "$RUN" "${ARGS[@]}"
 
 log "submitting $N tasks from 32 clients in the background"
@@ -35,9 +40,15 @@ log "  missing after restart: $missing of $accepted"
 
 log "check 2: clients retry all $N requests with the same business keys"
 submit_many "$N" crash 32 > "$RUN/responses-retry.txt"
+cp "$RUN/responses-retry.txt" "$RUN/responses-retry-all.txt"
 summarize_responses "$RUN/responses-retry.txt" | grep 'HTTP'
+# The retry burst can itself hit backpressure (429). Like a real client, wait and send those again.
+retry_refused "$RUN/responses-retry.txt" "$RUN/responses-retry-all.txt"
+log "  answers over all retry rounds:"
+summarize_responses "$RUN/responses-retry-all.txt" | grep 'HTTP'
 changed=$(join <(awk '$1=="202" {print $3, $2}' "$RUN/responses-before.txt" | sort) \
-               <(awk '{print $3, $2}' "$RUN/responses-retry.txt" | sort) | awk '$2 != $3' | wc -l | tr -d ' ')
+               <(awk '$1=="200" || $1=="202" {print $3, $2}' "$RUN/responses-retry-all.txt" | sort -u) \
+          | awk '$2 != $3' | wc -l | tr -d ' ')
 log "  accepted-before-crash keys answered with a different task id: $changed"
 
 log "check 3: wait for everything to finish"

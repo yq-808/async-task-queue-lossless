@@ -12,10 +12,12 @@ import java.time.Clock;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicLong;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Component;
@@ -42,9 +44,10 @@ import org.springframework.stereotype.Component;
  * at the top level.
  *
  * <p>An id stays marked as in memory from the moment it is queued until a worker's claim on it
- * has finished, so a refill does not queue it again. If a stale copy still slips in (for example
- * a refill query that read the row just before a redrive), it is harmless: claiming is a
- * conditional update, so the second copy is skipped as a claim miss.
+ * has finished, so a refill does not queue it again; and a refill whose database read began
+ * before that claim finished does not load it either (the read may predate the claim). If a
+ * stale copy still slips in, it is harmless: claiming is a conditional update, so the second
+ * copy is skipped as a claim miss.
  *
  * <p>The dispatcher thread is stopped with a flag and never interrupted: an interrupt landing
  * inside an H2 file write can close the database's file channel.
@@ -64,8 +67,17 @@ public class TaskDispatcher {
     private final long pollIntervalMillis;
     private final Duration agingThreshold;
     private final int starvedPerRefill;
+    /**
+     * When each id was last released by a worker (a sequence number, not a time). A refill skips
+     * an id released after its database read began: that read may show the row as PENDING from
+     * just before the worker's claim committed, and loading it again would only make a stale copy.
+     */
+    private final Map<String, Long> releasedAt = new ConcurrentHashMap<>();
+    private final AtomicLong releaseSeq = new AtomicLong();
     /** Most urgent level that has spilled to disk since the last refill; NONE when nothing has. */
     private final AtomicInteger mostUrgentSpilled = new AtomicInteger(NONE);
+    /** Bumped on every start, so a refill thread left over from an earlier run exits instead of running alongside. */
+    private final AtomicInteger feederRun = new AtomicInteger();
     private final Object wakeLock = new Object();
     private boolean wakeRequested;
 
@@ -94,7 +106,8 @@ public class TaskDispatcher {
 
     public void startFeeding() {
         open();
-        Thread t = new Thread(this::feedLoop, "task-dispatcher");
+        int run = feederRun.incrementAndGet();
+        Thread t = new Thread(() -> feedLoop(run), "task-dispatcher");
         t.setDaemon(true);
         feeder = t;
         t.start();
@@ -155,6 +168,7 @@ public class TaskDispatcher {
      * still in flight (the row would still read PENDING).
      */
     public void forget(String id) {
+        releasedAt.put(id, releaseSeq.incrementAndGet());
         inMemory.remove(id);
     }
 
@@ -167,6 +181,7 @@ public class TaskDispatcher {
         queue.close();
         List<String> ids = queue.drain().stream().map(QueuedTask::id).toList();
         inMemory.clear();
+        releasedAt.clear();
         return ids;
     }
 
@@ -175,29 +190,52 @@ public class TaskDispatcher {
      * a task more urgent than the least urgent one in memory has spilled to disk.
      */
     int refill() {
+        // Releases up to now are reflected in any read that starts from here on, so they no longer
+        // matter. Trimming on every call, not only when a read happens, keeps this log to roughly
+        // one poll interval of releases even while the queue stays above the low watermark.
+        long readStartedAfter = releaseSeq.get();
+        releasedAt.values().removeIf(seq -> seq <= readStartedAfter);
+
         int size = queue.size();
         boolean low = size <= lowWatermark;
         boolean urgentOnDisk = mostUrgentSpilled.get() < queue.leastUrgentLevelPresent();
         if (!low && !urgentOnDisk) {
             return 0;
         }
-        mostUrgentSpilled.set(NONE);
-        Instant now = clock.instant();
+        int spilledBefore = mostUrgentSpilled.getAndSet(NONE);
+        try {
+            return loadDue(clock.instant(), readStartedAfter);
+        } catch (RuntimeException e) {
+            // Keep the reason for the urgent refill, so the next poll tries again.
+            mostUrgentSpilled.accumulateAndGet(spilledBefore, Math::min);
+            throw e;
+        }
+    }
+
+    /** How many worker releases are being remembered for stale-read checks (for tests). */
+    int releasesTracked() {
+        return releasedAt.size();
+    }
+
+    private int loadDue(Instant now, long readStartedAfter) {
         int loaded = 0;
 
         // Tasks that have waited past the aging threshold go first, promoted to the top level.
-        for (DispatchCandidate c : store.findStarved(now.minus(agingThreshold), starvedPerRefill)) {
-            Load result = load(c.id(), 0);
-            if (result == Load.REJECTED) {
-                break;
+        // A threshold of zero or less turns aging off here too, as it does in the memory queue.
+        if (!agingThreshold.isNegative() && !agingThreshold.isZero()) {
+            for (DispatchCandidate c : store.findStarved(now.minus(agingThreshold), starvedPerRefill)) {
+                Load result = load(c.id(), 0, readStartedAfter);
+                if (result == Load.REJECTED) {
+                    break;
+                }
+                loaded += result == Load.LOADED ? 1 : 0;
             }
-            loaded += result == Load.LOADED ? 1 : 0;
         }
 
         // Then by priority and age. Ask for extra rows: the most urgent ones are often already in memory.
         int capacity = queue.capacity();
         for (DispatchCandidate c : store.findDispatchable(now, capacity + queue.size())) {
-            Load result = load(c.id(), c.priority());
+            Load result = load(c.id(), c.priority(), readStartedAfter);
             if (result == Load.REJECTED) {
                 break;
             }
@@ -210,7 +248,11 @@ public class TaskDispatcher {
      * Puts one task from the database into memory, evicting a less urgent one if memory is full.
      * REJECTED means it could not get in, so no later candidate (equally or less urgent) would either.
      */
-    private Load load(String id, int level) {
+    private Load load(String id, int level, long readStartedAfter) {
+        Long released = releasedAt.get(id);
+        if (released != null && released > readStartedAfter) {
+            return Load.STALE;
+        }
         if (!inMemory.add(id)) {
             return Load.ALREADY_IN_MEMORY;
         }
@@ -226,8 +268,8 @@ public class TaskDispatcher {
         return Load.LOADED;
     }
 
-    private void feedLoop() {
-        while (feeding) {
+    private void feedLoop(int run) {
+        while (feeding && feederRun.get() == run) {
             try {
                 refill();
             } catch (RuntimeException e) {
@@ -282,5 +324,5 @@ public class TaskDispatcher {
         return queue.oldestAgeNanos().map(TimeUnit.NANOSECONDS::toMillis).orElse(0L);
     }
 
-    private enum Load { LOADED, ALREADY_IN_MEMORY, REJECTED }
+    private enum Load { LOADED, ALREADY_IN_MEMORY, STALE, REJECTED }
 }

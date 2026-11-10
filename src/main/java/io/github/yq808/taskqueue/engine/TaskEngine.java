@@ -138,12 +138,7 @@ public class TaskEngine implements SmartLifecycle {
                     properties.shutdown().awaitInterrupted());
             List<String> drained = dispatcher.closeAndDrain();
             long durable = drained.isEmpty() ? 0 : store.countWaiting(drained);
-            for (ScheduledExecutorService jobs : new ScheduledExecutorService[] {maintenance, retention}) {
-                if (jobs != null) {
-                    jobs.shutdown(); // no interrupts: a job may be mid-write
-                    jobs.awaitTermination(5, TimeUnit.SECONDS);
-                }
-            }
+            stopJobs();
             long elapsedMs = TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - startNanos);
             lastShutdown = new ShutdownReport(elapsedMs, drained.size(), durable, workerReport.interrupted(),
                     workerReport.stillAlive());
@@ -155,7 +150,25 @@ public class TaskEngine implements SmartLifecycle {
             Thread.currentThread().interrupt();
             log.warn("Interrupted while stopping; anything unfinished is recovered on next start");
         } finally {
+            stopJobs(); // also on the interrupted path, so a later start() does not run every job twice
             running = false;
+        }
+    }
+
+    /** Stops the maintenance and retention jobs without interrupting them: a job may be mid-write. */
+    private void stopJobs() {
+        for (ScheduledExecutorService jobs : new ScheduledExecutorService[] {maintenance, retention}) {
+            if (jobs == null || jobs.isShutdown()) {
+                continue;
+            }
+            jobs.shutdown();
+            if (!Thread.currentThread().isInterrupted()) {
+                try {
+                    jobs.awaitTermination(5, TimeUnit.SECONDS);
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                }
+            }
         }
     }
 

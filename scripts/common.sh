@@ -95,6 +95,29 @@ submit_many() {
   "$JAVA" "$ROOT/scripts/LoadGen.java" "$BASE" "$2" "$1" "$3"
 }
 
+# submit_keys <keys-file> <parallelism> : submits exactly the keys listed (same payload rule as submit_many)
+submit_keys() {
+  "$JAVA" "$ROOT/scripts/LoadGen.java" "$BASE" - - "$2" "$1"
+}
+
+# retry_refused <responses-file> <all-responses-file> : resubmits every key answered 429 (or not
+# answered at all) after a pause, the way a client honouring Retry-After would, until none are left.
+# Appends every round's answers to <all-responses-file>.
+retry_refused() {
+  local last="$1" all="$2" pending="$1.pending" round
+  for round in $(seq 1 100); do
+    awk '$1=="429" || $1=="000" {print $3}' "$last" > "$pending"
+    [[ -s "$pending" ]] || return 0
+    log "  retry round $round: $(wc -l < "$pending" | tr -d ' ') refused with 429 or unanswered; retrying after 3 s"
+    sleep 3
+    submit_keys "$pending" 32 > "$last.next"
+    cat "$last.next" >> "$all"
+    mv "$last.next" "$last"
+  done
+  echo "requests still refused after 100 rounds" >&2
+  return 1
+}
+
 # summarize_responses <file> : counts by HTTP code and priority, and submit latency percentiles
 summarize_responses() {
   awk '{c[$1]++; cp[$1" "$4]++} END {for (k in c) printf "  HTTP %s: %d\n", k, c[k]; for (k in cp) printf "    %s\n", k" "cp[k]}' "$1" | sort

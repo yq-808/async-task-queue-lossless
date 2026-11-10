@@ -1,12 +1,14 @@
 package io.github.yq808.taskqueue.engine;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyInt;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
-import io.github.yq808.taskqueue.config.TaskQueueProperties;
 import io.github.yq808.taskqueue.metrics.TaskMetrics;
 import io.github.yq808.taskqueue.persistence.DispatchCandidate;
 import io.github.yq808.taskqueue.persistence.TaskStore;
@@ -34,22 +36,16 @@ class TaskDispatcherTest {
     /** Capacity 4, low watermark 2, aging 30 s. */
     @BeforeEach
     void setUp() {
-        TaskQueueProperties props = new TaskQueueProperties(
-                new TaskQueueProperties.Worker(1),
-                new TaskQueueProperties.Queue(4, 8, 0.5, Duration.ofSeconds(30)),
-                new TaskQueueProperties.Admission(100, false, 10, Duration.ofMinutes(10), 0.9, 0.7),
-                new TaskQueueProperties.Retry(4, Duration.ofSeconds(1), 2.0, Duration.ofSeconds(60), 0.2, 10),
-                new TaskQueueProperties.Execution(Duration.ofSeconds(10), Duration.ofSeconds(60),
-                        Duration.ofSeconds(10), 5, Duration.ofSeconds(5)),
-                new TaskQueueProperties.Dispatcher(Duration.ofMillis(200)),
-                new TaskQueueProperties.Shutdown(Duration.ofSeconds(20), Duration.ofSeconds(5)),
-                new TaskQueueProperties.Retention(Duration.ofDays(7), Duration.ofHours(1)),
-                new TaskQueueProperties.Simulation(Duration.ofMillis(200), Duration.ofMillis(1500), 0, 0, 1));
-        SimpleMeterRegistry registry = new SimpleMeterRegistry();
-        dispatcher = new TaskDispatcher(props, store, Clock.fixed(NOW, ZoneOffset.UTC), new TaskMetrics(registry),
-                registry);
-        dispatcher.open(); // fast path and refill enabled, no background thread
+        dispatcher = dispatcher(Duration.ofSeconds(30));
         when(store.findStarved(any(), anyInt())).thenReturn(List.of());
+    }
+
+    private TaskDispatcher dispatcher(Duration agingThreshold) {
+        SimpleMeterRegistry registry = new SimpleMeterRegistry();
+        TaskDispatcher d = new TaskDispatcher(TestProperties.with(1, 4, agingThreshold), store,
+                Clock.fixed(NOW, ZoneOffset.UTC), new TaskMetrics(registry), registry);
+        d.open(); // fast path and refill enabled, no background thread
+        return d;
     }
 
     private static DispatchCandidate row(String id, int priority) {
@@ -103,6 +99,64 @@ class TaskDispatcherTest {
         assertThat(dispatcher.refill()).isEqualTo(4);
 
         assertThat(drain()).containsExactly("low-old", "high-1", "high-2", "high-3");
+    }
+
+    @Test
+    void aFailedRefillKeepsTheReasonForTheUrgentRefill() throws Exception {
+        for (int i = 1; i <= 4; i++) {
+            dispatcher.offerNew("high-" + i, HIGH);
+        }
+        dispatcher.offerNew("high-5", HIGH);
+        dispatcher.forget(dispatcher.poll(1, TimeUnit.MILLISECONDS).id());
+        dispatcher.offerNew("low-1", LOW);
+        when(store.findDispatchable(any(), anyInt()))
+                .thenThrow(new IllegalStateException("database briefly unavailable"))
+                .thenReturn(List.of(row("high-2", HIGH), row("high-3", HIGH), row("high-4", HIGH),
+                        row("high-5", HIGH), row("low-1", LOW)));
+
+        assertThatThrownBy(dispatcher::refill).isInstanceOf(IllegalStateException.class);
+
+        assertThat(dispatcher.refill()).as("still above the watermark, but the spill is remembered").isEqualTo(1);
+        assertThat(drain()).containsExactly("high-2", "high-3", "high-4", "high-5");
+    }
+
+    @Test
+    void anAgingThresholdOfZeroTurnsDiskAgingOffLikeMemoryAging() {
+        TaskDispatcher noAging = dispatcher(Duration.ZERO);
+        when(store.findDispatchable(any(), anyInt())).thenReturn(List.of(row("high-1", HIGH)));
+
+        noAging.refill();
+
+        verify(store, never()).findStarved(any(), anyInt());
+    }
+
+    @Test
+    void aRefillDoesNotRequeueATaskClaimedWhileItsReadWasRunning() throws Exception {
+        dispatcher.offerNew("task-1", HIGH);
+        QueuedTask taken = dispatcher.poll(1, TimeUnit.MILLISECONDS);
+        // The refill's read sees task-1 still PENDING, because the worker's claim commits during the read.
+        when(store.findDispatchable(any(), anyInt())).thenAnswer(inv -> {
+            dispatcher.forget(taken.id());
+            return List.of(row("task-1", HIGH), row("task-2", HIGH));
+        });
+
+        assertThat(dispatcher.refill()).isEqualTo(1);
+
+        assertThat(drain()).containsExactly("task-2");
+    }
+
+    @Test
+    void theReleaseLogStaysSmallWhileTheQueueStaysAboveTheWatermark() {
+        dispatcher.offerNew("a", LOW);
+        dispatcher.offerNew("b", LOW);
+        dispatcher.offerNew("c", LOW); // size 3, above the watermark of 2: refill returns early
+        for (int i = 0; i < 1_000; i++) {
+            dispatcher.forget("done-" + i);
+        }
+
+        assertThat(dispatcher.refill()).isZero();
+
+        assertThat(dispatcher.releasesTracked()).isZero();
     }
 
     @Test

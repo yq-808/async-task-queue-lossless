@@ -43,6 +43,8 @@ public class AdmissionController {
     private final TaskQueueProperties.Admission config;
     private final DoubleSupplier throughput;
     private final Object lock = new Object();
+    /** One re-sync at a time: two overlapping ones would reset each other's change count. */
+    private final Object resyncLock = new Object();
     private long backlog;
     /** Reservations whose INSERT has not committed yet: a database count cannot see them. */
     private long inFlight;
@@ -104,12 +106,14 @@ public class AdmissionController {
 
     /** Replaces the estimate with a fresh database count, keeping whatever that count cannot have seen. */
     public void resync(LongSupplier persistedBacklog) {
-        synchronized (lock) {
-            changedDuringCount = 0;
-        }
-        long counted = persistedBacklog.getAsLong();
-        synchronized (lock) {
-            backlog = counted + inFlight + changedDuringCount;
+        synchronized (resyncLock) {
+            synchronized (lock) {
+                changedDuringCount = 0;
+            }
+            long counted = persistedBacklog.getAsLong(); // outside the admission lock: submissions keep flowing
+            synchronized (lock) {
+                backlog = counted + inFlight + changedDuringCount;
+            }
         }
     }
 
