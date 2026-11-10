@@ -1,0 +1,16 @@
+# build output
+target/
+*.class
+
+# runtime data and logs (H2 database files, app logs)
+data/
+logs/
+*.log
+*.mv.db
+*.trace.db
+
+# IDE
+.idea/
+*.iml
+.vscode/
+.DS_Store
