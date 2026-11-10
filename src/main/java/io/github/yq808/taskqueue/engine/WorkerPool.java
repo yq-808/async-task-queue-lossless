@@ -43,6 +43,12 @@ public class WorkerPool {
     private final List<WorkerSlot> slots = new CopyOnWriteArrayList<>();
 
     private volatile boolean running;
+    /**
+     * Bumped on every start. A worker loop only keeps going while its own run is current, so a
+     * worker that outlived a stop (stuck past both waits) exits once it gets free, instead of
+     * running alongside the new pool after a restart.
+     */
+    private final AtomicInteger run = new AtomicInteger();
     private volatile ThreadPoolExecutor executor;
 
     public WorkerPool(TaskQueueProperties properties, TaskDispatcher dispatcher, TaskProcessor processor,
@@ -59,6 +65,7 @@ public class WorkerPool {
 
     public void start() {
         slots.clear();
+        int currentRun = run.incrementAndGet();
         running = true;
         executor = new ThreadPoolExecutor(threads, threads, 0L, TimeUnit.MILLISECONDS, new SynchronousQueue<>(),
                 new ThreadFactoryBuilder().setNameFormat("task-worker-%d").build(),
@@ -66,7 +73,7 @@ public class WorkerPool {
         for (int i = 0; i < threads; i++) {
             WorkerSlot slot = new WorkerSlot(instanceId + "/worker-" + i);
             slots.add(slot);
-            executor.execute(() -> loop(slot));
+            executor.execute(() -> loop(slot, currentRun));
         }
     }
 
@@ -92,9 +99,13 @@ public class WorkerPool {
         return new StopReport(done, interrupted, done ? 0 : pool.getActiveCount());
     }
 
-    private void loop(WorkerSlot slot) {
+    private boolean current(int myRun) {
+        return running && run.get() == myRun;
+    }
+
+    private void loop(WorkerSlot slot, int myRun) {
         slot.bind(Thread.currentThread());
-        while (running) {
+        while (current(myRun)) {
             long breakerWait = breaker.remainingOpenNanos();
             if (breakerWait > 0) {
                 LockSupport.parkNanos(Math.min(breakerWait, TimeUnit.MILLISECONDS.toNanos(POLL_MILLIS)));
@@ -109,7 +120,7 @@ public class WorkerPool {
             if (task == null) {
                 continue;
             }
-            if (!running) {
+            if (!current(myRun)) {
                 // Stopping: leave it. The row is still PENDING on disk and is picked up after restart.
                 dispatcher.forget(task.id());
                 break;
