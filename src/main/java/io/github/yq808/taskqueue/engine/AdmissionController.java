@@ -3,8 +3,8 @@ package io.github.yq808.taskqueue.engine;
 import io.github.yq808.taskqueue.config.TaskQueueProperties;
 import io.github.yq808.taskqueue.domain.TaskPriority;
 import io.github.yq808.taskqueue.metrics.TaskMetrics;
-import java.util.concurrent.atomic.AtomicLong;
 import java.util.function.DoubleSupplier;
+import java.util.function.LongSupplier;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Component;
 
@@ -23,17 +23,31 @@ import org.springframework.stereotype.Component;
  *   <li>A refusal carries Retry-After: how long the current throughput needs to drain the excess.</li>
  * </ul>
  *
- * <p>The backlog figure is the last database count plus admissions since, re-synced every few
- * hundred milliseconds, and admission reserves a slot with a CAS. Between re-syncs the figure
- * only over-counts (claims are not subtracted until the next re-sync), so the cap errs on the
- * side of refusing.
+ * <p>The backlog figure is an estimate that is <b>never below</b> the real number of waiting
+ * rows, so new admissions can never push the real backlog past the cap:
+ * <ul>
+ *   <li>admitting reserves a slot (counted at once, and as in flight until its INSERT commits);</li>
+ *   <li>a task that goes back to waiting (retry, write-back, lease recovery) is added at once;</li>
+ *   <li>a claim is not subtracted until the next re-sync, which only over-counts;</li>
+ *   <li>a re-sync replaces the estimate with a database count, plus the reservations still in
+ *       flight, plus whatever committed or went back to waiting while the count ran (it may
+ *       already be in the count; counting it twice only over-counts).</li>
+ * </ul>
+ * These steps share one small lock, so a re-sync can never overwrite a reservation made while it
+ * ran. Retries of tasks that were already accepted are not refused (they are already promised),
+ * so they can lift the backlog above the cap; they then make new submissions be refused sooner.
  */
 @Component
 public class AdmissionController {
 
     private final TaskQueueProperties.Admission config;
     private final DoubleSupplier throughput;
-    private final AtomicLong backlog = new AtomicLong();
+    private final Object lock = new Object();
+    private long backlog;
+    /** Reservations whose INSERT has not committed yet: a database count cannot see them. */
+    private long inFlight;
+    /** Commits and returns to waiting since the current re-sync began its count. */
+    private long changedDuringCount;
     private volatile boolean accepting;
 
     @Autowired
@@ -51,24 +65,52 @@ public class AdmissionController {
             return Decision.shuttingDown();
         }
         long threshold = threshold(priority);
-        while (true) {
-            long current = backlog.get();
-            if (current >= threshold) {
-                return Decision.overloaded(retryAfterSeconds(current - threshold + 1), current, threshold);
+        synchronized (lock) {
+            if (backlog >= threshold) {
+                return Decision.overloaded(retryAfterSeconds(backlog - threshold + 1), backlog, threshold);
             }
-            if (backlog.compareAndSet(current, current + 1)) {
-                return Decision.admit();
-            }
+            backlog++;
+            inFlight++;
+            return Decision.admit();
+        }
+    }
+
+    /** The INSERT for a slot reserved by {@link #tryAdmit} has committed. */
+    public void confirm() {
+        synchronized (lock) {
+            inFlight--;
+            changedDuringCount++;
         }
     }
 
     /** Gives back a slot reserved by {@link #tryAdmit} that did not turn into a new task (duplicate, error). */
     public void release() {
-        backlog.updateAndGet(v -> Math.max(0, v - 1));
+        synchronized (lock) {
+            inFlight--;
+            backlog = Math.max(0, backlog - 1);
+        }
     }
 
-    public void resync(long persistedBacklog) {
-        backlog.set(persistedBacklog);
+    /** Tasks that were running went back to waiting (retry, shutdown write-back, lease recovery, redrive). */
+    public void returnedToBacklog(int count) {
+        if (count <= 0) {
+            return;
+        }
+        synchronized (lock) {
+            backlog += count;
+            changedDuringCount += count;
+        }
+    }
+
+    /** Replaces the estimate with a fresh database count, keeping whatever that count cannot have seen. */
+    public void resync(LongSupplier persistedBacklog) {
+        synchronized (lock) {
+            changedDuringCount = 0;
+        }
+        long counted = persistedBacklog.getAsLong();
+        synchronized (lock) {
+            backlog = counted + inFlight + changedDuringCount;
+        }
     }
 
     public void open() {
@@ -84,7 +126,9 @@ public class AdmissionController {
     }
 
     public long backlog() {
-        return backlog.get();
+        synchronized (lock) {
+            return backlog;
+        }
     }
 
     /** The cap currently in force, before the per-priority share is applied. */

@@ -39,13 +39,13 @@ class AdmissionControllerTest {
     @Test
     void shedsLowPriorityFirst() {
         var c = controller(false);
-        c.resync(70);
+        c.resync(() -> 70);
         assertThat(c.tryAdmit(TaskPriority.LOW).outcome()).isEqualTo(Outcome.OVERLOADED);
         assertThat(c.tryAdmit(TaskPriority.NORMAL).admitted()).isTrue();
-        c.resync(90);
+        c.resync(() -> 90);
         assertThat(c.tryAdmit(TaskPriority.NORMAL).outcome()).isEqualTo(Outcome.OVERLOADED);
         assertThat(c.tryAdmit(TaskPriority.HIGH).admitted()).isTrue();
-        c.resync(100);
+        c.resync(() -> 100);
         assertThat(c.tryAdmit(TaskPriority.HIGH).outcome()).isEqualTo(Outcome.OVERLOADED);
     }
 
@@ -65,11 +65,11 @@ class AdmissionControllerTest {
     void retryAfterIsTheTimeToDrainTheExcess() {
         var c = controller(false);
         throughput.set(2.0);
-        c.resync(100);
+        c.resync(() -> 100);
         var d = c.tryAdmit(TaskPriority.HIGH);
         assertThat(d.outcome()).isEqualTo(Outcome.OVERLOADED);
         assertThat(d.retryAfterSeconds()).isEqualTo(1);
-        c.resync(140);
+        c.resync(() -> 140);
         assertThat(c.tryAdmit(TaskPriority.HIGH).retryAfterSeconds()).isEqualTo(21);
     }
 
@@ -96,9 +96,45 @@ class AdmissionControllerTest {
     }
 
     @Test
+    void aResyncKeepsReservationsTheDatabaseCountCannotSeeYet() {
+        var c = controller(false);
+        c.resync(() -> 98);
+        assertThat(c.tryAdmit(TaskPriority.HIGH).admitted()).isTrue(); // reserved, INSERT not committed
+        c.resync(() -> 98);                                              // so the count still says 98
+        assertThat(c.backlog()).isEqualTo(99);
+
+        c.confirm();
+        c.resync(() -> 99);
+        assertThat(c.backlog()).isEqualTo(99);
+    }
+
+    @Test
+    void workCommittedOrReturnedWhileACountRunsIsNotLost() {
+        var c = controller(false);
+        c.resync(() -> 50);
+        assertThat(c.tryAdmit(TaskPriority.HIGH).admitted()).isTrue();
+        c.resync(() -> {
+            // while the count runs: the reservation commits after the count saw 50 rows,
+            // and a retry puts a running task back to waiting
+            c.confirm();
+            c.returnedToBacklog(1);
+            return 50L;
+        });
+        assertThat(c.backlog()).as("never below the real 52 waiting rows").isGreaterThanOrEqualTo(52);
+    }
+
+    @Test
+    void retriesRaiseTheBacklogSoNewWorkIsRefusedSooner() {
+        var c = controller(false);
+        c.resync(() -> 99);
+        c.returnedToBacklog(1);
+        assertThat(c.tryAdmit(TaskPriority.HIGH).admitted()).isFalse();
+    }
+
+    @Test
     void releaseGivesTheSlotBack() {
         var c = controller(false);
-        c.resync(99);
+        c.resync(() -> 99);
         assertThat(c.tryAdmit(TaskPriority.HIGH).admitted()).isTrue();
         assertThat(c.tryAdmit(TaskPriority.HIGH).admitted()).isFalse();
         c.release();

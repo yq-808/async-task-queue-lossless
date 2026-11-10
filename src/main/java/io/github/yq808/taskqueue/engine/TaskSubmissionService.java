@@ -96,6 +96,7 @@ public class TaskSubmissionService {
             }
             throw e;
         }
+        admission.confirm();
         metrics.submitted.increment();
         dispatcher.offerNew(task.getId(), task.getPriority());
         return new SubmitResult.Accepted(task);

@@ -106,7 +106,11 @@ public class TaskController {
                     "error", task.getStatus().isTerminal() ? "task did not succeed: " + task.getLastError()
                             : "task not finished yet"));
         }
-        var result = store.findResult(id).orElseThrow();
+        var result = store.findResult(id).orElse(null);
+        if (result == null) {
+            // Deleted by retention between the two reads.
+            return ResponseEntity.notFound().build();
+        }
         return ResponseEntity.ok(body("taskId", id, "status", task.getStatus(),
                 "result", mapper.readTree(result.getResult()), "completedAt", result.getCreatedAt()));
     }
@@ -147,6 +151,7 @@ public class TaskController {
             return ResponseEntity.status(HttpStatus.CONFLICT).body(body(
                     "error", "only FAILED or DEAD_LETTER tasks can be redriven", "status", task.getStatus()));
         }
+        admission.returnedToBacklog(1);
         dispatcher.offerNew(id, task.getPriority());
         return ResponseEntity.accepted().body(body("taskId", id, "status", TaskStatus.PENDING));
     }

@@ -57,7 +57,9 @@ public class TaskEngine implements SmartLifecycle {
     private final Clock clock;
 
     private volatile boolean running;
+    private volatile boolean stopRequested;
     private volatile ScheduledExecutorService maintenance;
+    private volatile ScheduledExecutorService retention;
     private volatile long lastTickNanos;
     private volatile ShutdownReport lastShutdown;
 
@@ -80,7 +82,11 @@ public class TaskEngine implements SmartLifecycle {
     }
 
     @Override
-    public void start() {
+    public synchronized void start() {
+        if (running) {
+            return;
+        }
+        stopRequested = false;
         Instant now = clock.instant();
         TaskStore.RecoveryResult recovered = store.recoverExpiredLeases(FAR_FUTURE, now);
         if (recovered.total() > 0) {
@@ -88,7 +94,7 @@ public class TaskEngine implements SmartLifecycle {
             log.warn("Recovered {} task(s) left RUNNING by the previous process: {} requeued, {} dead-lettered",
                     recovered.total(), recovered.requeued(), recovered.deadLettered());
         }
-        admission.resync(store.countBacklog());
+        admission.resync(store::countBacklog);
 
         dispatcher.startFeeding();
         workers.start();
@@ -102,8 +108,12 @@ public class TaskEngine implements SmartLifecycle {
                 TimeUnit.MILLISECONDS);
         lastTickNanos = System.nanoTime();
         maintenance.scheduleAtFixedRate(guard("throughput", this::tickThroughput), 1, 1, TimeUnit.SECONDS);
+        // Cleanup gets its own thread: a large purge must not hold up the lease reaper or the
+        // backlog re-sync (without re-syncs the admission estimate only grows and refuses work).
+        retention = Executors.newSingleThreadScheduledExecutor(
+                new ThreadFactoryBuilder().setNameFormat("task-retention").setDaemon(true).build());
         long purge = properties.retention().cleanupInterval().toMillis();
-        maintenance.scheduleWithFixedDelay(guard("retention", this::purgeOldResults), purge, purge,
+        retention.scheduleWithFixedDelay(guard("retention", this::purgeOldResults), purge, purge,
                 TimeUnit.MILLISECONDS);
 
         admission.open();
@@ -114,7 +124,11 @@ public class TaskEngine implements SmartLifecycle {
     }
 
     @Override
-    public void stop() {
+    public synchronized void stop() {
+        if (!running) {
+            return;
+        }
+        stopRequested = true;
         long startNanos = System.nanoTime();
         log.info("Task engine stopping: refusing new submissions");
         admission.close();
@@ -124,10 +138,11 @@ public class TaskEngine implements SmartLifecycle {
                     properties.shutdown().awaitInterrupted());
             List<String> drained = dispatcher.closeAndDrain();
             long durable = drained.isEmpty() ? 0 : store.countWaiting(drained);
-            ScheduledExecutorService m = maintenance;
-            if (m != null) {
-                m.shutdown(); // no interrupts: a job may be mid-write
-                m.awaitTermination(5, TimeUnit.SECONDS);
+            for (ScheduledExecutorService jobs : new ScheduledExecutorService[] {maintenance, retention}) {
+                if (jobs != null) {
+                    jobs.shutdown(); // no interrupts: a job may be mid-write
+                    jobs.awaitTermination(5, TimeUnit.SECONDS);
+                }
             }
             long elapsedMs = TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - startNanos);
             lastShutdown = new ShutdownReport(elapsedMs, drained.size(), durable, workerReport.interrupted(),
@@ -161,6 +176,7 @@ public class TaskEngine implements SmartLifecycle {
     void reapExpiredLeases() {
         Instant now = clock.instant();
         TaskStore.RecoveryResult r = store.recoverExpiredLeases(now, now);
+        admission.returnedToBacklog(r.requeued());
         if (r.total() > 0) {
             metrics.recovered.increment(r.total());
             log.warn("Lease reaper: {} task(s) requeued, {} dead-lettered", r.requeued(), r.deadLettered());
@@ -168,7 +184,7 @@ public class TaskEngine implements SmartLifecycle {
     }
 
     void resyncBacklog() {
-        admission.resync(store.countBacklog());
+        admission.resync(store::countBacklog);
     }
 
     void tickThroughput() {
@@ -184,7 +200,7 @@ public class TaskEngine implements SmartLifecycle {
         Instant cutoff = clock.instant().minus(properties.retention().succeededTtl());
         int total = 0;
         int n;
-        while ((n = store.purgeSucceededBefore(cutoff, PURGE_BATCH)) > 0) {
+        while (!stopRequested && (n = store.purgeSucceededBefore(cutoff, PURGE_BATCH)) > 0) {
             total += n;
         }
         if (total > 0) {

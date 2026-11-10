@@ -58,6 +58,7 @@ public class WorkerPool {
     }
 
     public void start() {
+        slots.clear();
         running = true;
         executor = new ThreadPoolExecutor(threads, threads, 0L, TimeUnit.MILLISECONDS, new SynchronousQueue<>(),
                 new ThreadFactoryBuilder().setNameFormat("task-worker-%d").build(),
@@ -147,10 +148,6 @@ public class WorkerPool {
 
     public int threads() {
         return threads;
-    }
-
-    public String instanceId() {
-        return instanceId;
     }
 
     /**

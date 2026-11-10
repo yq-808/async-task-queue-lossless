@@ -46,6 +46,7 @@ public class TaskProcessor {
     private final TaskHandlerRegistry handlers;
     private final RetryPolicy retryPolicy;
     private final DownstreamCircuitBreaker breaker;
+    private final AdmissionController admission;
     private final TaskMetrics metrics;
     private final ObjectMapper mapper;
     private final Clock clock;
@@ -53,12 +54,13 @@ public class TaskProcessor {
     private final Duration lease;
 
     public TaskProcessor(TaskStore store, TaskHandlerRegistry handlers, RetryPolicy retryPolicy,
-                         DownstreamCircuitBreaker breaker, TaskMetrics metrics, ObjectMapper mapper, Clock clock,
-                         TaskQueueProperties properties) {
+                         DownstreamCircuitBreaker breaker, AdmissionController admission, TaskMetrics metrics,
+                         ObjectMapper mapper, Clock clock, TaskQueueProperties properties) {
         this.store = store;
         this.handlers = handlers;
         this.retryPolicy = retryPolicy;
         this.breaker = breaker;
+        this.admission = admission;
         this.metrics = metrics;
         this.mapper = mapper;
         this.clock = clock;
@@ -129,7 +131,8 @@ public class TaskProcessor {
         try {
             json = mapper.writeValueAsString(result);
         } catch (JsonProcessingException e) {
-            onFailure(task, e, false, processMs, slot, now);
+            // Our own result could not be serialised: a defect, so dead-letter rather than retry.
+            onFailure(task, new IllegalStateException("result could not be serialised", e), false, processMs, slot, now);
             return;
         }
         if (store.complete(task, json, processMs, slot.name(), now)) {
@@ -150,6 +153,7 @@ public class TaskProcessor {
                     processMs, slot.name(), now);
             if (ok) {
                 metrics.writtenBack.increment();
+                admission.returnedToBacklog(1);
             } else {
                 fencedOut(task);
             }
@@ -166,6 +170,7 @@ public class TaskProcessor {
                             slot.name(), now);
                     if (ok) {
                         metrics.retriesScheduled.increment();
+                        admission.returnedToBacklog(1);
                     }
                 } else {
                     ok = deadLetter(task, type, "retries exhausted after " + task.attemptNo() + " attempts: " + error,
@@ -181,6 +186,7 @@ public class TaskProcessor {
                             slot.name(), now);
                     if (ok) {
                         metrics.systemRetries.increment();
+                        admission.returnedToBacklog(1);
                     }
                 } else {
                     ok = deadLetter(task, type, "system retries exhausted after " + task.systemRetries()
