@@ -40,6 +40,8 @@ class FailureClassifierTest {
                 .isEqualTo(ErrorType.SYSTEM_RECOVERABLE);
         assertThat(FailureClassifier.classify(new JsonParseException(null, "unexpected token")))
                 .isEqualTo(ErrorType.BUSINESS_RETRYABLE);
+        assertThat(FailureClassifier.classify(new UncheckedIOException(new JsonParseException(null, "bad answer"))))
+                .as("UncheckedIOException is a pure wrapper").isEqualTo(ErrorType.BUSINESS_RETRYABLE);
         assertThat(FailureClassifier.classify(new IllegalStateException("bug", new JsonParseException(null, "x"))))
                 .as("a parse error deep inside a bug is still a bug").isEqualTo(ErrorType.SYSTEM_FATAL);
     }
