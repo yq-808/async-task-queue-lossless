@@ -29,7 +29,7 @@ import org.springframework.context.ConfigurableApplicationContext;
  * and check that every accepted task completes, and that the attempt interrupted by the stop was
  * handed back rather than counted against the task.
  */
-class GracefulShutdownRestartTest {
+class GracefulShutdownRestartIntegrationTest {
 
     private final String dataDir = TestDataDir.create("shutdown");
 

@@ -18,7 +18,7 @@
 | `ConcurrencyIntegrationTest` | 1 | 32 个客户端、1500 个请求（含 500 个重复键）、内存队列只有 8 格：恰好 1000 个任务、每个只执行一次、内存峰值 ≤ 8、溢出任务全部完成 |
 | `PriorityOrderIntegrationTest` | 1 | 单工人忙碌时排队的 9 个任务按 HIGH → NORMAL → LOW 的顺序开始执行 |
 | `BackpressureIntegrationTest` | 1 | 上限 20：LOW 在 10、NORMAL 在 15、HIGH 在 20 被拒，每次拒绝都是 429 + Retry-After，积压不超上限 |
-| `GracefulShutdownRestartTest` | 1 | 2 个执行中 + 8 个排队时停机：执行中的被中断并回写、尝试次数退还；排队的确认在库；限时收敛；同一数据目录重启后 10 个全部完成，被中断过的任务历史为 `RELEASED → SUCCEEDED` |
+| `GracefulShutdownRestartIntegrationTest` | 1 | 2 个执行中 + 8 个排队时停机：执行中的被中断并回写、尝试次数退还；排队的确认在库；限时收敛；同一数据目录重启后 10 个全部完成，被中断过的任务历史为 `RELEASED → SUCCEEDED` |
 | `CrashRecoveryIntegrationTest` | 2 | 死进程遗留的 RUNNING 行启动时被恢复（次数用完的进死信）；运行中租约过期的任务被回收并完成 |
 
 ## 2. 真实运行验证

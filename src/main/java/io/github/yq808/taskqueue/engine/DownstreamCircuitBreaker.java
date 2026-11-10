@@ -9,9 +9,10 @@ import org.springframework.stereotype.Component;
 
 /**
  * When the downstream keeps failing with system faults, workers stop taking tasks for a while
- * instead of turning every queued task into another failed attempt and another retry. After the
- * open period the next task is let through; a success closes the breaker, another failure keeps
- * counting.
+ * instead of turning every queued task into another failed attempt and another retry. When the
+ * open period ends every worker resumes (there is no single trial request); if the downstream is
+ * still failing, the next run of consecutive failures opens it again, and any success resets the
+ * count.
  */
 @Component
 public class DownstreamCircuitBreaker {

@@ -4,7 +4,6 @@ import io.micrometer.core.instrument.Counter;
 import io.micrometer.core.instrument.MeterRegistry;
 import io.micrometer.core.instrument.Timer;
 import io.micrometer.core.instrument.distribution.ValueAtPercentile;
-import java.time.Duration;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicLong;
 import org.springframework.stereotype.Component;
@@ -117,9 +116,5 @@ public class TaskMetrics {
     }
 
     public record TimerSummary(long count, double avgMs, double p95Ms, double maxMs) {
-
-        public Duration average() {
-            return Duration.ofMillis(Math.round(avgMs));
-        }
     }
 }
