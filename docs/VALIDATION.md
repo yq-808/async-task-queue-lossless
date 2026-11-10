@@ -3,7 +3,9 @@
 两部分：`./mvnw verify` 跑的自动化测试，以及对打包后的 jar 做的真实运行验证（真实进程、真实 HTTP、真实 H2 文件、真实 `kill -9` 和 SIGTERM）。
 运行环境：macOS（Apple Silicon）、OpenJDK 21、默认配置（16 个工作线程）。每个脚本的完整输出在 [`docs/validation/`](validation/)。
 
-## 1. 自动化测试（65 个，全部通过）
+## 1. 自动化测试（69 个，全部通过）
+
+CI（`.github/workflows/ci.yml`）在 JDK 17 和 JDK 21 上各跑一遍全部测试，在 Linux 上重跑第 2 节的四个真实运行脚本，并对 Docker 镜像做构建、运行、停机、重启的冒烟测试（`scripts/docker-smoke.sh`）。
 
 | 测试类 | 数量 | 证明什么 |
 |---|---|---|
@@ -11,9 +13,10 @@
 | `BoundedPriorityBlockingQueueConcurrencyTest` | 4 | 8 生产者 × 5000 + 8 消费者、容量 32、重复 3 轮：无丢失、无重复、峰值 ≤ 容量；并发 `offerOrEvict` 不超限且高压下保留紧急任务 |
 | `AdmissionControllerTest` | 9 | 按优先级分级拒绝、自适应上限的上下界、Retry-After 计算、1000 个并发准入在上限 100 时恰好放行 100 个；校正时保留还没提交的预占名额、计数期间提交或回到等待的任务不丢；重试回到积压后新请求更早被拒 |
 | `RetryPolicyTest` | 2 | 指数增长、封顶、抖动范围 |
-| `FailureClassifierTest` | 3 | 四类失败的归类，穿透 `ExecutionException` 包装；被包装的 IO 错误算系统可恢复，模型返回无法解析算业务可重试 |
+| `FailureClassifierTest` | 3 | 四类失败的归类，穿透 `ExecutionException`、`UncheckedIOException` 这类纯包装；被包装的 IO 错误算系统可恢复，模型返回无法解析算业务可重试；cause 链成环时不会卡死 |
 | `DownstreamCircuitBreakerTest` | 2 | 连续系统故障打开、到期关闭、成功清零 |
-| `TaskDispatcherTest` | 4 | 补货规则（数据库用桩）：溢出到磁盘的 HIGH 立即挤掉内存里的 LOW，不用等低水位；没有更紧急的溢出时高于水位不补货；在磁盘上饿着的 LOW 被提前装载；关闭后可以重新打开 |
+| `TaskDispatcherTest` | 7 | 补货规则（数据库用桩）：溢出到磁盘的 HIGH 立即挤掉内存里的 LOW，不用等低水位；没有更紧急的溢出时高于水位不补货；在磁盘上饿着的 LOW 被提前装载；补货查询失败后仍记得要紧急补货；老化阈值为 0 时磁盘老化也关闭；读取期间被 claim 的任务不会被再次排入；关闭后可以重新打开 |
+| `WorkerPoolTest` | 1 | 停机时卡住没停下来的工作线程，在重启后空下来时自行退出，不会与新一轮工作线程并行（修复前这个测试失败） |
 | `TaskStoreTest` | 8 | claim 互斥；**失去租约的旧工人写不进结果**；完成时状态、结果、尝试记录同事务；退避未到不可 claim；退还尝试次数；毒丸进死信；按优先级再按时间出队；过期清理连带结果 |
 | `TaskLifecycleIntegrationTest` | 13 | 真实 HTTP + H2 文件：接收→执行→取结果；未完成取结果 409；同键同载荷返回原任务（字段顺序无关）；同键不同载荷 409；重试成功；重试用尽进死信并记录原因；不可重试直接失败；代码缺陷进死信；系统故障不占次数；执行超时；重投；参数校验；统计/列表/指标/Prometheus |
 | `ConcurrencyIntegrationTest` | 1 | 32 个客户端、1500 个请求（含 500 个重复键）、内存队列只有 8 格：恰好 1000 个任务、每个只执行一次、内存峰值 ≤ 8、溢出任务全部完成 |
