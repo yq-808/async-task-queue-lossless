@@ -146,6 +146,20 @@ class TaskDispatcherTest {
     }
 
     @Test
+    void theReleaseLogStaysSmallWhileTheQueueStaysAboveTheWatermark() {
+        dispatcher.offerNew("a", LOW);
+        dispatcher.offerNew("b", LOW);
+        dispatcher.offerNew("c", LOW); // size 3, above the watermark of 2: refill returns early
+        for (int i = 0; i < 1_000; i++) {
+            dispatcher.forget("done-" + i);
+        }
+
+        assertThat(dispatcher.refill()).isZero();
+
+        assertThat(dispatcher.releasesTracked()).isZero();
+    }
+
+    @Test
     void canBeReopenedAfterCloseAndDrain() {
         dispatcher.offerNew("a", HIGH);
         assertThat(dispatcher.closeAndDrain()).containsExactly("a");

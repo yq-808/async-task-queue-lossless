@@ -190,6 +190,12 @@ public class TaskDispatcher {
      * a task more urgent than the least urgent one in memory has spilled to disk.
      */
     int refill() {
+        // Releases up to now are reflected in any read that starts from here on, so they no longer
+        // matter. Trimming on every call, not only when a read happens, keeps this log to roughly
+        // one poll interval of releases even while the queue stays above the low watermark.
+        long readStartedAfter = releaseSeq.get();
+        releasedAt.values().removeIf(seq -> seq <= readStartedAfter);
+
         int size = queue.size();
         boolean low = size <= lowWatermark;
         boolean urgentOnDisk = mostUrgentSpilled.get() < queue.leastUrgentLevelPresent();
@@ -197,17 +203,18 @@ public class TaskDispatcher {
             return 0;
         }
         int spilledBefore = mostUrgentSpilled.getAndSet(NONE);
-        long readStartedAfter = releaseSeq.get();
         try {
             return loadDue(clock.instant(), readStartedAfter);
         } catch (RuntimeException e) {
             // Keep the reason for the urgent refill, so the next poll tries again.
             mostUrgentSpilled.accumulateAndGet(spilledBefore, Math::min);
             throw e;
-        } finally {
-            // Releases before this read began are reflected in it; only later ones still matter.
-            releasedAt.values().removeIf(seq -> seq <= readStartedAfter);
         }
+    }
+
+    /** How many worker releases are being remembered for stale-read checks (for tests). */
+    int releasesTracked() {
+        return releasedAt.size();
     }
 
     private int loadDue(Instant now, long readStartedAfter) {

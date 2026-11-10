@@ -10,7 +10,7 @@ Java 开发工程师笔试题「异步任务队列 v1.2」作答：一个**入�
 - 不丢失：**先落盘再入内存**，提交事务成功才返回 202；崩溃恢复、租约 + 版本号防护、优雅停机回写
 - 背压：按优先级分级拒绝（429 + Retry-After），积压上限随吞吐自适应；内存满时溢出到磁盘
 - 重试：四类失败分别处理，指数退避 + 抖动，重试在磁盘上等待，熔断器，死信 + 人工重投
-- 验证：69 个单元/集成/并发测试，外加对打包后 jar 的真实运行验证：压测、`kill -9` 崩溃、SIGTERM 停机；
+- 验证：70 个单元/集成/并发测试，外加对打包后 jar 的真实运行验证：压测、`kill -9` 崩溃、SIGTERM 停机；
   CI 在 JDK 17 和 21 上跑全部测试，在 Linux 上重跑这些真实运行脚本，并构建、启动、重启 Docker 镜像
 
 文档：
@@ -37,7 +37,7 @@ Java 开发工程师笔试题「异步任务队列 v1.2」作答：一个**入�
 | Java 17+、Spring | Spring Boot 3.5，编译目标 Java 17 | CI 在 JDK 17 和 21 上运行 |
 | H2 文件模式，Spring Data JPA，DDL 随项目、启动自动建表，状态表与结果表分离 | `schema.sql`：`task`、`task_result`、`task_attempt` 三张表 | 每个集成测试都从空目录启动 |
 | 适时 git commit，体现过程 | 每一步一个提交，两个 PR 带审查循环 | `git log` |
-| 加分：分层清晰、文档、单元与并发测试、部署 | `web` / `engine` / `persistence` / `queue` 分层；docs/；69 个测试；Docker 镜像 | CI 的 Docker 任务：构建、运行、停机、重启后数据仍在 |
+| 加分：分层清晰、文档、单元与并发测试、部署 | `web` / `engine` / `persistence` / `queue` 分层；docs/；70 个测试；Docker 镜像 | CI 的 Docker 任务：构建、运行、停机、重启后数据仍在 |
 
 ## 快速开始
 
@@ -120,7 +120,7 @@ src/main/java/io/github/yq808/taskqueue/
 ## 测试与验证
 
 ```bash
-./mvnw verify                  # 69 个测试：单元、并发、端到端（真实 H2 文件）、停机重启、崩溃恢复
+./mvnw verify                  # 70 个测试：单元、并发、端到端（真实 H2 文件）、停机重启、崩溃恢复
 scripts/demo.sh                # 每种情况各提交一个任务，打印最终状态、结果、尝试记录和指标
 scripts/load-test.sh           # 压测：超过积压上限时的 429 分布、溢出到磁盘、全部完成
 scripts/crash-test.sh          # 提交过程中 kill -9，重启后核对没有丢任务、客户端重试幂等
