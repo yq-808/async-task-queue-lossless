@@ -206,8 +206,6 @@ public class TaskDispatcher {
         return loaded;
     }
 
-    private enum Load { LOADED, ALREADY_IN_MEMORY, REJECTED }
-
     /**
      * Puts one task from the database into memory, evicting a less urgent one if memory is full.
      * REJECTED means it could not get in, so no later candidate (equally or less urgent) would either.
@@ -283,4 +281,6 @@ public class TaskDispatcher {
     public long oldestQueuedMillis() {
         return queue.oldestAgeNanos().map(TimeUnit.NANOSECONDS::toMillis).orElse(0L);
     }
+
+    private enum Load { LOADED, ALREADY_IN_MEMORY, REJECTED }
 }

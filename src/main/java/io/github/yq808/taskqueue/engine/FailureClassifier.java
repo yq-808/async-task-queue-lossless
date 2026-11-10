@@ -1,10 +1,10 @@
 package io.github.yq808.taskqueue.engine;
 
+import com.fasterxml.jackson.core.JsonProcessingException;
 import io.github.yq808.taskqueue.domain.ErrorType;
 import io.github.yq808.taskqueue.handler.NonRetryableTaskException;
 import io.github.yq808.taskqueue.handler.RecoverableSystemException;
 import io.github.yq808.taskqueue.handler.RetryableTaskException;
-import com.fasterxml.jackson.core.JsonProcessingException;
 import java.io.IOException;
 import java.util.concurrent.CompletionException;
 import java.util.concurrent.ExecutionException;

@@ -2,11 +2,11 @@ package io.github.yq808.taskqueue.engine;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
+import com.fasterxml.jackson.core.JsonParseException;
 import io.github.yq808.taskqueue.domain.ErrorType;
 import io.github.yq808.taskqueue.handler.NonRetryableTaskException;
 import io.github.yq808.taskqueue.handler.RecoverableSystemException;
 import io.github.yq808.taskqueue.handler.RetryableTaskException;
-import com.fasterxml.jackson.core.JsonParseException;
 import java.io.IOException;
 import java.io.UncheckedIOException;
 import java.net.ConnectException;
