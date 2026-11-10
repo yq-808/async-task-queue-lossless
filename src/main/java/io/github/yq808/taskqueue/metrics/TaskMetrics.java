@@ -111,8 +111,9 @@ public class TaskMetrics {
                 p95 = v.value(TimeUnit.MILLISECONDS);
             }
         }
-        return new TimerSummary(snapshot.count(), snapshot.mean(TimeUnit.MILLISECONDS), p95,
-                snapshot.max(TimeUnit.MILLISECONDS));
+        double max = snapshot.max(TimeUnit.MILLISECONDS);
+        // The percentile comes from a histogram estimate and can land just above the exact max.
+        return new TimerSummary(snapshot.count(), snapshot.mean(TimeUnit.MILLISECONDS), Math.min(p95, max), max);
     }
 
     public record TimerSummary(long count, double avgMs, double p95Ms, double maxMs) {
